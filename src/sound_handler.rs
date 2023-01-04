@@ -115,6 +115,16 @@ fn build_ui(app: &gtk::Application, data: Rc<Vec<f64>>) {
         root.fill(&WHITE).unwrap();
         let root = root.margin(25, 25, 25, 25);
 
+        let mut y_upper = 1.0;
+        let mut y_lower = -1.0;
+        for &(_, y) in points.iter() {
+            if y > y_upper {
+                y_upper = y;
+            } else if y < y_lower {
+                y_lower = y;
+            }
+        }
+
         let mut chart = ChartBuilder::on(&root)
             // Set the caption of the chart
             .caption("Wavy Crockett", ("sans-serif", 40).into_font())
@@ -122,7 +132,7 @@ fn build_ui(app: &gtk::Application, data: Rc<Vec<f64>>) {
             .x_label_area_size(20)
             .y_label_area_size(40)
             // Finally attach a coordinate on the drawing area and make a chart context
-            .build_cartesian_2d(0..points.len(), -1f64..1f64)
+            .build_cartesian_2d(0..points.len(), y_lower..y_upper)
             .unwrap();
 
         // Then we can draw a mesh

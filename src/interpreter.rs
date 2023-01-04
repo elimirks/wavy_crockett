@@ -390,6 +390,10 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             param_count_eq(func, params, 3)?;
             wd_shifting_pure_tone(ctx, params)
         },
+        Builtin::WdFromFrequencies => {
+            param_count_eq(func, params, 1)?;
+            wd_from_frequencies(ctx, params)
+        },
         Builtin::WdSpline => {
             param_count_eq(func, params, 2)?;
             wd_spline(params)
@@ -496,27 +500,28 @@ fn wd_shifting_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc
     for index in 0..sample_count as usize {
         // t in [0.0,1.0]
         let t = (index as f64) / (sample_rate as f64);
-        let x = 2.0 * PI * t * (f0 + t * (f1 - f0));
+        let poop = (index as f64) / (sample_count as f64);
+        let x = 2.0 * PI * t.powi(2);
         data.push(x.sin());
     }
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }
 
-fn wd_from_frequency_series(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_from_frequencies(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
-    let frequency_series = try_get_wavedata(&params[0])
+    let frequencies = try_get_wavedata(&params[0])
         .ok_or("frequency-series parameter must be a wavedata object")?;
-    let sample_count = try_get_int(&params[2])
-        .ok_or("sample-count parameter must be an int")?;
-
+    if frequencies.iter().any(|f| *f < 0.0) {
+        return Err("All frequencies must be equal or above 0.0".to_owned());
+    }
     let mut data = vec![];
     #[allow(clippy::needless_range_loop)]
-    for index in 0..sample_count as usize {
+    for (i, frequency) in frequencies.iter().enumerate() {
         // t in [0.0,1.0]
-        let t = (index as f64) / (sample_rate as f64);
-        let x = 2.0 * PI * t * frequency_series[index];
+        let t = (i as f64) / (sample_rate as f64);
+        let x = 2.0 * PI * t * frequency;
         data.push(x.sin());
     }
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
