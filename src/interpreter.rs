@@ -1,6 +1,6 @@
 use std::{fmt::Debug, cell::RefCell, rc::Rc, collections::{HashMap, HashSet}, process::exit, f64::consts::PI};
 use rand::{thread_rng, Rng};
-use splines::{Interpolate, Interpolation, Key, Spline};
+use splines::{Interpolation, Key, Spline};
 
 use crate::parser::*;
 use crate::sound_handler::*;
@@ -343,6 +343,18 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             param_count_eq(func, params, 2)?;
             wd_pure_tone(ctx, params)
         },
+        Builtin::WdSquare => {
+            param_count_eq(func, params, 2)?;
+            wd_square(ctx, params)
+        },
+        Builtin::WdSaw => {
+            param_count_eq(func, params, 2)?;
+            wd_saw(ctx, params)
+        },
+        Builtin::WdTriangle => {
+            param_count_eq(func, params, 2)?;
+            wd_triangle(ctx, params)
+        },
         Builtin::WdSave => {
             param_count_eq(func, params, 2)?;
             wd_save(ctx, params)
@@ -474,6 +486,67 @@ fn wd_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> 
     }
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }
+
+fn wd_square(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
+    let sample_rate = try_get_int(&sr)
+        .ok_or("wd-sample-rate must be globally set as an int")?;
+    let frequency = try_get_float(&params[0])
+        .ok_or("frequency parameter must be a float")?;
+    let sample_count = try_get_int(&params[1])
+        .ok_or("sample-count parameter must be an int")?;
+
+    let period = 1.0 / frequency;
+    let mut data = vec![];
+    for t in 0..sample_count as usize {
+        let sample_time = (t as f64) / (sample_rate as f64);
+        if sample_time % period < period / 2.0 {
+            data.push(1.0);
+        } else {
+            data.push(-1.0);
+        }
+    }
+    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+}
+
+fn wd_saw(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
+    let sample_rate = try_get_int(&sr)
+        .ok_or("wd-sample-rate must be globally set as an int")?;
+    let frequency = try_get_float(&params[0])
+        .ok_or("frequency parameter must be a float")?;
+    let sample_count = try_get_int(&params[1])
+        .ok_or("sample-count parameter must be an int")?;
+
+    let period = 1.0 / frequency;
+    let mut data = vec![];
+    for t in 0..sample_count as usize {
+        let t = (t as f64) / (sample_rate as f64);
+        let x = 2.0 * ((t / period) - ((t / period) + 0.5).floor());
+        data.push(x);
+    }
+    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+}
+
+fn wd_triangle(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
+    let sample_rate = try_get_int(&sr)
+        .ok_or("wd-sample-rate must be globally set as an int")?;
+    let frequency = try_get_float(&params[0])
+        .ok_or("frequency parameter must be a float")?;
+    let sample_count = try_get_int(&params[1])
+        .ok_or("sample-count parameter must be an int")?;
+
+    let period = 1.0 / frequency;
+    let mut data = vec![];
+    for t in 0..sample_count as usize {
+        let t = period / 4.0 + (t as f64) / (sample_rate as f64);
+        let x = 2.0 * (t / period - (t / period + 0.5).floor()).abs();
+        data.push((2.0 * x) - 1.0);
+    }
+    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+}
+
 
 fn wd_plot(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let wavedata = try_get_wavedata(&params[0])

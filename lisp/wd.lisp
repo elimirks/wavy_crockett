@@ -193,3 +193,10 @@
       (wd-spline
         (list (cons 0.0 d3) (cons 0.5 d2) (cons 10.0 0.0))
         wd-full-note-duration))))
+
+;; https://en.wikipedia.org/wiki/Low-frequency_oscillation
+(defun envelope-lfo (amp-min amp-max lfo-frequency data)
+  (set 'duration (wd-len data))
+  (set 'pre-amp-env (wd-amplify 0.5 (wd-shift 1.0 (wd-pure-tone lfo-frequency duration))))
+  (set 'amp-env (wd-shift amp-min (wd-amplify (- amp-max amp-min) pre-amp-env)))
+  (wd-multiply amp-env data))
