@@ -125,6 +125,7 @@ fn spline_coefficients(points: &[(f64, f64)]) -> Vec<f64> {
         spline_matrix.push(row);
         ys.push(0.0);
     }
+    print_matrix(&spline_matrix);
     solve_linear_equation(&spline_matrix, &ys)
 }
 

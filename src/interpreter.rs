@@ -507,6 +507,7 @@ fn wd_shifting_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }
 
+// https://math.stackexchange.com/questions/1820065/equation-for-a-sinusoidal-wave-with-changing-frequency
 fn wd_from_frequencies(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
@@ -516,12 +517,13 @@ fn wd_from_frequencies(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<S
     if frequencies.iter().any(|f| *f < 0.0) {
         return Err("All frequencies must be equal or above 0.0".to_owned());
     }
+    let step_size = 1.0 / (sample_rate as f64);
+    let mut cumulative = 0.0;
     let mut data = vec![];
-    #[allow(clippy::needless_range_loop)]
-    for (i, frequency) in frequencies.iter().enumerate() {
-        // t in [0.0,1.0]
-        let t = (i as f64) / (sample_rate as f64);
-        let x = 2.0 * PI * t * frequency;
+    for f in frequencies.iter() {
+        // s(t) = sin(2 pi integral_0^t f(t) dt)
+        cumulative += f * step_size;
+        let x = 2.0 * PI * cumulative;
         data.push(x.sin());
     }
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
