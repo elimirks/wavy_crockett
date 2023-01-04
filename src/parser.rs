@@ -122,7 +122,6 @@ static BUILTIN_NAMES: &[(&str, Builtin)] = &[
     ("wd-subsample", Builtin::WdSubSample),
     ("wd-reverse", Builtin::WdReverse),
     ("wd-plot", Builtin::WdPlot),
-    ("wd-shifting-pure-tone", Builtin::WdShiftingPureTone),
     ("wd-spline", Builtin::WdSpline),
     ("wd-from-frequencies", Builtin::WdFromFrequencies),
 ];
@@ -183,7 +182,6 @@ pub enum Builtin {
     WdSubSample,
     WdReverse,
     WdPlot,
-    WdShiftingPureTone,
     WdSpline,
     WdFromFrequencies,
     ToInt,

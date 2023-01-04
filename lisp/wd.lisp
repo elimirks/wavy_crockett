@@ -180,13 +180,16 @@
   (wd-pad-to-full-note (wd-adsr attack decay sustain release noise)))
 
 ;; https://output.com/blog/get-perfect-kick-drum
-(defun synth-kick ()
+(defun envelope-soft-full-kick (data)
   (set 'duration wd-full-note-duration)
-  (set 'base (wd-shifting-pure-tone d2 0.0 duration))
-  ;(set 'overtones (wd-decay (wd-shifting-pure-tone d3 0.0 wd-quarter-note-duration)))
-  (set 'overtones (wd-decay (wd-shifting-pure-tone d3 c3 0)))
-  (set 'attack (/ duration 16))
-  (set 'decay (- duration (/ duration 8)))
-  (set 'sustain 0.0)
-  (set 'release 0)
-  (wd-amplify 0.5 (wd-adsr attack decay sustain release (wd-superimpose base overtones))))
+  (set 'attack 0)
+  (set 'decay (/ duration 4))
+  (set 'sustain 0.5)
+  (set 'release (/ duration 2))
+  (wd-adsr attack decay sustain release data))
+(defun synth-kick ()
+  (envelope-soft-full-kick
+    (wd-from-frequencies
+      (wd-spline
+        (list (cons 0.0 d3) (cons 0.5 d2) (cons 10.0 0.0))
+        wd-full-note-duration))))

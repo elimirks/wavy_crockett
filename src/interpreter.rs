@@ -1,9 +1,10 @@
 use std::{fmt::Debug, cell::RefCell, rc::Rc, collections::{HashMap, HashSet}, process::exit, f64::consts::PI};
 use rand::{thread_rng, Rng};
+use splines::{Interpolate, Interpolation, Key, Spline};
 
 use crate::parser::*;
 use crate::sound_handler::*;
-use crate::math::*;
+use crate::math::are_points_sorted;
 
 type RunResult<T> = Result<T, String>;
 
@@ -386,10 +387,6 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             param_count_eq(func, params, 1)?;
             wd_plot(params)
         },
-        Builtin::WdShiftingPureTone => {
-            param_count_eq(func, params, 3)?;
-            wd_shifting_pure_tone(ctx, params)
-        },
         Builtin::WdFromFrequencies => {
             param_count_eq(func, params, 1)?;
             wd_from_frequencies(ctx, params)
@@ -485,28 +482,6 @@ fn wd_plot(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     Ok(params[0].clone())
 }
 
-fn wd_shifting_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
-    let sample_rate = try_get_int(&sr)
-        .ok_or("wd-sample-rate must be globally set as an int")?;
-    let f0 = try_get_float(&params[0])
-        .ok_or("start-frequency parameter must be a float")?;
-    let f1 = try_get_float(&params[1])
-        .ok_or("end-frequency parameter must be a float")?;
-    let sample_count = try_get_int(&params[2])
-        .ok_or("sample-count parameter must be an int")?;
-
-    let mut data = vec![];
-    for index in 0..sample_count as usize {
-        // t in [0.0,1.0]
-        let t = (index as f64) / (sample_rate as f64);
-        let poop = (index as f64) / (sample_count as f64);
-        let x = 2.0 * PI * t.powi(2);
-        data.push(x.sin());
-    }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
-}
-
 // https://math.stackexchange.com/questions/1820065/equation-for-a-sinusoidal-wave-with-changing-frequency
 fn wd_from_frequencies(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
@@ -540,12 +515,20 @@ fn wd_spline(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     } else if points.len() < 2 {
         return Err("points parameter must be a list of at least 2 values".to_owned());
     }
-    let spline = Spline::new(&points);
+    // TODO: Use a cubic bezier instead
+    let keys = points.iter().copied().map(|(x, y)| {
+        Key::new(x, y, Interpolation::Cosine)
+    }).collect::<Vec<_>>();
+    let spline = Spline::from_vec(keys);
+
+    let min_x = points[0].0;
+    let max_x = points.last().unwrap().0;
 
     let mut data = vec![];
     for index in 0..sample_count as usize {
-        let t = (index as f64) / (sample_count as f64);
-        data.push(spline.interpolate(t));
+        let t = min_x + ((index as f64) / (sample_count as f64)) * (max_x - min_x);
+        let x = spline.sample(t).unwrap();
+        data.push(x);
     }
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }

@@ -1,12 +1,25 @@
 (require "lisp/common")
 (require "lisp/wd")
 
-(defun envelope-soft-full-kick (data)
-  (set 'duration wd-full-note-duration)
-  (set 'attack (/ duration 16))
-  (set 'decay (/ duration 4))
-  (set 'sustain 0.5)
-  (set 'release (/ duration 2))
-  (wd-adsr attack decay sustain release data))
-;(wd-plot (envelope-soft-full-kick (wd-from-frequencies (wd-spline (list (cons 0.0 d3) (cons 2.5 d2) (cons 10.0 0.0) ) wd-full-note-duration))))
-(wd-plot (wd-spline (list (cons 0.0 d3) (cons 2.5 d2) (cons 10.0 0.0) ) wd-full-note-duration))
+(wd-set-bpm 100.0)
+(set 'drum-loop (wd-build-track
+  (list
+    (list (synth-kick))
+    nil
+    (list (wd-amplify 0.7 (synth-noise-hat-muted)))
+    nil
+    (list (synth-kick))
+    nil
+    (list (wd-amplify 0.5 (synth-noise-hat)))
+    nil
+    (list (synth-kick))
+    nil
+    (list (wd-amplify 0.5 (synth-noise-hat-muted)))
+    nil
+    (list (wd-amplify 0.7 (synth-kick))))))
+
+(wd-play (reduce wd-concat
+                 (list drum-loop
+                       drum-loop
+                       drum-loop
+                       drum-loop)))

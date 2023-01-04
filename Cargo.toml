@@ -14,3 +14,9 @@ cairo-rs = "0.15"
 gtk = "0.15"
 plotters-cairo = "0.3"
 nalgebra = "0.31"
+ndarray = "0.15"
+ndarray-linalg = { version = "0.16", features = ["openblas"] }
+splines = "4.1"
+# openblas-src = { version = "0.10.0", features = ["system"] }
+# blas = { version = "0.15", default-features = false, features = ["accelerate"] }
+# blas-src = { version = "0.8", features = ["accelerate"] }
