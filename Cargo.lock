@@ -1517,7 +1517,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c38c045535d93ec4f0b4defec448e4291638ee608530863b1e2ba115d4fff7f"
 
 [[package]]
-name = "wavy_crocket"
+name = "wavy_crockett"
 version = "0.1.0"
 dependencies = [
  "backtrace-on-stack-overflow",

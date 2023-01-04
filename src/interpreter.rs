@@ -3,7 +3,7 @@ use rand::{thread_rng, Rng};
 
 use crate::parser::*;
 use crate::sound_handler::*;
-use crate::math::spline_coefficients;
+use crate::math::*;
 
 type RunResult<T> = Result<T, String>;
 
@@ -350,10 +350,6 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             param_count_eq(func, params, 1)?;
             wd_play(ctx, params)
         },
-        Builtin::WdFlatAmplitude => {
-            param_count_eq(func, params, 2)?;
-            wd_flat_amplitude(params)
-        },
         Builtin::WdMultiply => {
             param_count_eq(func, params, 2)?;
             wd_multiply(params)
@@ -378,10 +374,6 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             param_count_eq(func, params, 1)?;
             wd_noise(params)
         },
-        Builtin::WdSlopeUp => {
-            param_count_eq(func, params, 1)?;
-            wd_slope_up(params)
-        },
         Builtin::WdSubSample => {
             param_count_eq(func, params, 3)?;
             wd_subsample(params)
@@ -400,7 +392,7 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
         },
         Builtin::WdSpline => {
             param_count_eq(func, params, 2)?;
-            wd_spline(ctx, params)
+            wd_spline(params)
         },
         Builtin::ToString => {
             param_count_eq(func, params, 1)?;
@@ -465,7 +457,7 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
 }
 
 fn wd_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sr = ctx.scope.borrow().lookup(&"wd-sample-rate");
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
     let frequency = try_get_float(&params[0])
@@ -490,7 +482,7 @@ fn wd_plot(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
 }
 
 fn wd_shifting_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sr = ctx.scope.borrow().lookup(&"wd-sample-rate");
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
     let f0 = try_get_float(&params[0])
@@ -511,7 +503,7 @@ fn wd_shifting_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc
 }
 
 fn wd_from_frequency_series(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sr = ctx.scope.borrow().lookup(&"wd-sample-rate");
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
     let frequency_series = try_get_wavedata(&params[0])
@@ -520,6 +512,7 @@ fn wd_from_frequency_series(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult
         .ok_or("sample-count parameter must be an int")?;
 
     let mut data = vec![];
+    #[allow(clippy::needless_range_loop)]
     for index in 0..sample_count as usize {
         // t in [0.0,1.0]
         let t = (index as f64) / (sample_rate as f64);
@@ -529,33 +522,29 @@ fn wd_from_frequency_series(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }
 
-fn wd_spline(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sr = ctx.scope.borrow().lookup(&"wd-sample-rate");
-    let sample_rate = try_get_int(&sr)
-        .ok_or("wd-sample-rate must be globally set as an int")?;
+fn wd_spline(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let points = try_get_point_list(&params[0])
-        .ok_or("sample-count parameter must be list of float atoms (of the form `(a . b)`)")?;
+        .ok_or("points parameter must be list of float atoms (of the form `(a . b)`)")?;
     let sample_count = try_get_int(&params[1])
         .ok_or("sample-count parameter must be an int")?;
 
-    println!("{:?}", spline_coefficients(&points));
-    todo!();
+    if !are_points_sorted(&points) {
+        return Err("Each point must have an increasing x value".to_owned());
+    } else if points.len() < 2 {
+        return Err("points parameter must be a list of at least 2 values".to_owned());
+    }
+    let spline = Spline::new(&points);
+
     let mut data = vec![];
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
-}
-
-fn wd_flat_amplitude(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let amplitude = try_get_float(&params[0])
-        .ok_or("amplitude parameter must be an int")?;
-    let sample_count = try_get_int(&params[1])
-        .ok_or("sample-count parameter must be an int")?;
-
-    let data = vec![amplitude; sample_count as usize];
+    for index in 0..sample_count as usize {
+        let t = (index as f64) / (sample_count as f64);
+        data.push(spline.interpolate(t));
+    }
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }
 
 fn wd_save(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sr = ctx.scope.borrow().lookup(&"wd-sample-rate");
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
     let wavedata = try_get_wavedata(&params[0])
@@ -571,7 +560,7 @@ fn wd_save(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
 }
 
 fn wd_play(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sr = ctx.scope.borrow().lookup(&"wd-sample-rate");
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
     let wavedata = try_get_wavedata(&params[0])
@@ -580,7 +569,7 @@ fn wd_play(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     if play_wave(sample_rate as u32, &wavedata).is_ok() {
         Ok(Rc::new(SExpr::nil()))
     } else {
-        Err(format!("Failed playing wavedata"))
+        Err("Failed playing wavedata".to_owned())
     }
 }
 
@@ -592,7 +581,7 @@ fn wd_multiply(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     if lhs.len() != rhs.len() {
         return Err("wd-multiply must be called on two equally sized wavedata objects".to_owned());
     }
-    let mut data = lhs.clone();
+    let mut data = lhs;
     for i in 0..data.len() {
         data[i] *= rhs[i];
     }
@@ -605,9 +594,9 @@ fn wd_superimpose(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let rhs = try_get_wavedata(&params[1])
         .ok_or("rhs parameter must be a wavedata object")?;
     let (mut data, to_add) = if lhs.len() > rhs.len() {
-        (lhs.clone(), rhs)
+        (lhs, rhs)
     } else {
-        (rhs.clone(), lhs)
+        (rhs, lhs)
     };
     for i in 0..to_add.len() {
         data[i] += to_add[i];
@@ -623,10 +612,8 @@ fn wd_superimpose_insert(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let mut data = try_get_wavedata(&params[2])
         .ok_or("`to` parameter must be a wavedata object")?;
 
-    let padding_amount = (index - data.len() as i64).max(0);
-    for _ in 0..padding_amount {
-        data.push(0.0);
-    }
+    let padding_amount = (index - data.len() as i64).max(0) as usize;
+    data.resize(data.len() + padding_amount, 0.0);
     for (i, n) in from_data.iter().enumerate() {
         let offset = i + index as usize;
         if offset >= data.len() {
@@ -645,14 +632,12 @@ fn wd_len(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
 }
 
 fn wd_concat(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let lhs = try_get_wavedata(&params[0])
+    let mut lhs = try_get_wavedata(&params[0])
         .ok_or("lhs parameter must be a wavedata object")?;
     let rhs = try_get_wavedata(&params[1])
         .ok_or("rhs parameter must be a wavedata object")?;
-
-    let mut data = lhs.clone();
-    data.extend_from_slice(&rhs);
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    lhs.extend_from_slice(&rhs);
+    Ok(Rc::new(SExpr::Atom(Value::WaveData(lhs))))
 }
 
 fn wd_noise(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
@@ -662,16 +647,6 @@ fn wd_noise(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     let mut data = vec![];
     for _ in 0..sample_count {
         data.push(rng.gen_range(-1.0..1.0));
-    }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
-}
-
-fn wd_slope_up(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let sample_count = try_get_int(&params[0])
-        .ok_or("sample-count parameter must be an int")?;
-    let mut data = vec![];
-    for i in 0..sample_count {
-        data.push(i as f64 / sample_count as f64);
     }
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }
@@ -870,10 +845,7 @@ fn eval_set(scope: Rc<RefCell<Scope>>, params: &[Rc<SExpr>]) -> RunResult<Rc<SEx
 
 fn get_symbol_name(sexpr: &SExpr) -> Option<&String> {
     match sexpr {
-        SExpr::Atom(value) => match value {
-            Value::Symbol(name) => Some(name),
-            _ => None,
-        },
+        SExpr::Atom(Value::Symbol(name)) => Some(name),
         _ => None,
     }
 }

@@ -23,8 +23,14 @@
 (defun wd-invert (data)
   (wd-amplify -1.0 data))
 
+(defun wd-slope-up (duration) 
+  (wd-spline '((0.0 . 0.0) (1.0 . 1.0)) duration))
+
 (defun wd-slope-down (duration) 
-  (wd-reverse (wd-slope-up duration)))
+  (wd-spline '((0.0 . 1.0) (1.0 . 0.0)) duration))
+
+(defun wd-flat-amplitude (amount duration) 
+  (wd-spline (list (cons 0.0 amount) (cons 1.0 amount)) duration))
 
 ;; Shifts the given data by some amount
 (defun wd-shift (amount data)

@@ -74,6 +74,7 @@ fn gen_wave_file(
     // Sample rate
     raw.extend_from_slice(&(sample_rate as u32).to_le_bytes());
     // (SampleRate * BitsPerSample * Channels) / 8
+    #[allow(clippy::identity_op)]
     raw.extend_from_slice(&((sample_rate * 16 * 1 / 8) as u32).to_le_bytes());
     // Block align
     raw.extend_from_slice(&(4u16).to_le_bytes());
@@ -95,7 +96,7 @@ pub fn plot_wavedata(data: Vec<f64>) {
         Some("com.mirecki.elijah.wavy_crocket"),
         Default::default(),
     );
-    let points = Rc::new(data.clone());
+    let points = Rc::new(data);
     application.connect_activate(move |app| {
         build_ui(app, points.clone());
     });
@@ -106,7 +107,7 @@ fn build_ui(app: &gtk::Application, data: Rc<Vec<f64>>) {
     let width = 2048;
     let height = 1024;
     drawable(app, width, height, move |_, cr| {
-        let points = data.iter().map(|x| *x).enumerate()
+        let points = data.iter().copied().enumerate()
             .collect::<Vec<_>>();
 
         let root = CairoBackend::new(cr, (width as u32, height as u32)).unwrap().into_drawing_area();
@@ -116,7 +117,7 @@ fn build_ui(app: &gtk::Application, data: Rc<Vec<f64>>) {
 
         let mut chart = ChartBuilder::on(&root)
             // Set the caption of the chart
-            .caption("Wavy Crocket", ("sans-serif", 40).into_font())
+            .caption("Wavy Crockett", ("sans-serif", 40).into_font())
             // Set the size of the label region
             .x_label_area_size(20)
             .y_label_area_size(40)
