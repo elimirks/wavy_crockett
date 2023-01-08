@@ -5,12 +5,16 @@
 
 ;; Try playing with the cardinality parameters and changing which
 ;; chord multiplier set the `mario-melody` function uses.
-(set 'wd-chord-multipliers-1 (wd-create-chord-multipliers 2.0 2.0 2))
-(set 'wd-chord-multipliers-2 (wd-create-chord-multipliers 1.5 1.0 2))
-(set 'wd-chord-multipliers-3 (wd-create-chord-multipliers (+ 1.0 (/ 2.0 3.0)) (/ 2.0 3.0) 3))
+(set 'wd-chord-multipliers-1 (wd-create-chord-multipliers 1.0 2.0 2))
+(set 'wd-chord-multipliers-2 (wd-create-chord-multipliers 2.0 2.0 2))
+(set 'wd-chord-multipliers-3 (wd-create-chord-multipliers 3.0 2.0 2))
+(set 'wd-chord-multipliers-4 (wd-create-chord-multipliers 4.0 2.0 2))
+(set 'wd-chord-multipliers-5 (wd-create-chord-multipliers 1.5 1.0 2))
+(set 'wd-chord-multipliers-6 (wd-create-chord-multipliers 2.0 1.0 2))
+(set 'wd-chord-multipliers-7 (wd-create-chord-multipliers (/ 5.0 3.0) (/ 2.0 3.0) 2))
 
 (defun mario-melody (frequency)
-  (wd-amplify 0.1 (wd-chord frequency wd-chord-multipliers-1 synth-pure)))
+  (wd-amplify 0.1 (wd-chord frequency wd-chord-multipliers-8 synth-pure)))
 
 (set 'mario-intro
      (wd-build-track
