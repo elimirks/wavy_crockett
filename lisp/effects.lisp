@@ -3,7 +3,27 @@
 
 (wd-set-bpm 100.0)
 
-; Using LFO to create a wobble bass
-(wd-play (envelope-lfo 0.5 0.1 5.0 (wd-square g2 (* 8 wd-full-note-duration))))
-; Using LFO to add some spice to a sawtooth wave
-(wd-play (envelope-lfo 0.5 0.3 5.0 (wd-saw g3 (* 8 wd-full-note-duration))))
+(set 'duration (* 8 wd-full-note-duration))
+
+(defun saw (frequency)
+  (wd-saw frequency duration))
+
+(set 'result
+     (reduce (lambda (acc it) (wd-concat (wd-concat acc (wd-zero wd-full-note-duration)) it))
+             (list
+               ;; using lfo to create a wobble bass
+               (envelope-lfo 0.5 0.1 5.0 (wd-square g2 duration))
+               ;; various slight overtones also make cool effects
+               (wd-amplify 0.25 (wd-superimpose (wd-square g2 duration) (wd-square (* 1.001 g2) duration)))
+               (wd-amplify 0.25 (wd-superimpose (wd-square g2 duration) (wd-square (* 1.005 g2) duration)))
+               (wd-amplify 0.25 (wd-superimpose (wd-square g2 duration) (wd-square (* 1.01 g2) duration)))
+               ;; make a chord by superimposing a multiple of two
+               (wd-amplify 0.25 (wd-chord g2 (list 2.0) saw))
+               ;; or another chord, by increments of 3/2 multiples
+               (wd-amplify 0.25 (wd-chord g2 (list 1.5 2.0) saw))
+               ;; anotha one
+               (wd-amplify 0.25 (wd-chord g2 (list 2.0 3.0) saw))
+               (wd-amplify 0.25 (wd-chord g2 (list 1.25 2.0) saw))
+               (wd-amplify 0.25 (wd-chord g2 (list 1.25 1.5) saw)))))
+(wd-play result)
+;(wd-save result "so_i_heard_ya_like_overtones.wav")

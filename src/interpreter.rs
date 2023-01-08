@@ -407,6 +407,10 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             param_count_eq(func, params, 2)?;
             wd_spline(params)
         },
+        Builtin::WdLowPass => {
+            param_count_eq(func, params, 2)?;
+            wd_low_pass(ctx, params)
+        },
         Builtin::ToString => {
             param_count_eq(func, params, 1)?;
             Ok(Rc::new(sexpr_as_string(&params[0])))
@@ -603,6 +607,29 @@ fn wd_spline(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
         let x = spline.sample(t).unwrap();
         data.push(x);
     }
+    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+}
+
+fn wd_low_pass(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+    use biquad::*;
+    let sr = ctx.scope.borrow().lookup("wd-sample-rate");
+    // # of samples per second
+    let sample_rate = try_get_int(&sr)
+        .ok_or("wd-sample-rate must be globally set as an int")?;
+    let sample_freq = 5.0 / sample_rate as f64;
+    let cutoff_freq = try_get_float(&params[0])
+        .ok_or("cutoff-freq parameter must be a float")?;
+    let wavedata = try_get_wavedata(&params[1])
+        .ok_or("wavedata parameter must be a wavedata object")?;
+
+    let coeffs = Coefficients::<f64>::from_params(
+        Type::LowPass,
+        sample_freq.hz(),
+        cutoff_freq.hz(),
+        Q_BUTTERWORTH_F64
+    ).unwrap();
+    let mut bq = DirectForm2Transposed::<f64>::new(coeffs);
+    let data = wavedata.iter().map(|&v| bq.run(v)).collect::<Vec<_>>();
     Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
 }
 

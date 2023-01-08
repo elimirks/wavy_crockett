@@ -18,8 +18,8 @@
     nil
     (list (wd-amplify 0.7 (synth-kick))))))
 
-(wd-play (reduce wd-concat
+(wd-save (reduce wd-concat
                  (list drum-loop
                        drum-loop
                        drum-loop
-                       drum-loop)))
+                       drum-loop)) "drumloop.wav")

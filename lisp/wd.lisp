@@ -200,3 +200,19 @@
   (set 'pre-amp-env (wd-amplify 0.5 (wd-shift 1.0 (wd-pure-tone lfo-frequency duration))))
   (set 'amp-env (wd-shift amp-min (wd-amplify (- amp-max amp-min) pre-amp-env)))
   (wd-multiply amp-env data))
+
+;; Converts a note and synth function into a chord equivalent
+;; Uses a list of chord frequency multipliers to decide what type of chord
+;; should be played. Idk what's considered a major etc, I've just played around
+;; with a few different settings.
+;; synth-func should be of the form (lambda (frequency) ...)
+;; i.e., the duration should be included in the synth-func
+(defun wd-chord (freqeuncy chord-multipliers synth-func)
+  (fold wd-superimpose (synth-func freqeuncy)
+        (map (lambda (it) (synth-func (* it freqeuncy))) chord-multipliers)))
+
+;; Using an initial offset and a spacing parameter you can construct
+;; well formed chords of arbitrary cardinality.
+;; i.e., with any number of "keys pressed"
+(defun wd-create-chord-multipliers (initial-offset spacing cardinality)
+  (map (lambda (it) (+ initial-offset (* it spacing))) (range 0 cardinality)))
