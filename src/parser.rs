@@ -2,10 +2,6 @@ use std::{fmt::Debug, rc::Rc};
 
 type ParseResult<T> = Result<T, String>;
 
-// FIXME: Cons should be a value type, not an expr type
-// Then, we know that all exprs must be evaluated, and all values are
-// done being evalutaed.
-// Quoting things will be more accurate that way.
 #[derive(Clone)]
 pub enum Value {
     Symbol(String),
@@ -18,6 +14,7 @@ pub enum Value {
     // crippled by the poor performance of my Lisp implementation.
     WaveData(Vec<f64>),
     Function(Vec<String>, Vec<Rc<SExpr>>),
+    Cons(Rc<Value>, Rc<Value>),
 }
 
 impl PartialEq for Value {
@@ -34,6 +31,9 @@ impl PartialEq for Value {
                     lhs_params.iter().zip(rhs_params).all(|(l, r)| l == r)
                 }
             },
+            (Value::Cons(lhs_car, lhs_cdr), Value::Cons(rhs_car, rhs_cdr)) => {
+                lhs_car == rhs_car && lhs_cdr == rhs_cdr
+            }
             _ => false,
         }
     }
@@ -43,12 +43,16 @@ impl Eq for Value {
 }
 
 impl Value {
-    pub fn nil() -> Value {
-        Value::Builtin(Builtin::Nil)
+    pub fn nil() -> Rc<Value> {
+        Rc::new(Value::Builtin(Builtin::Nil))
+    }
+
+    pub fn truthy() -> Rc<Value> {
+        Rc::new(Value::Int(1))
     }
 
     pub fn is_nil(&self) -> bool {
-        *self == Value::nil()
+        matches!(self, Value::Builtin(Builtin::Nil))
     }
 }
 
@@ -76,6 +80,7 @@ impl Debug for Value {
             },
             Value::WaveData(data) => f.write_str(&format!("WaveData([...; {}])", data.len())),
             Value::Builtin(value) => value.fmt(f),
+            Value::Cons(lhs, rhs) => f.write_str(&format!("({:?} . {:?})", lhs, rhs)),
         }
     }
 }
@@ -204,19 +209,14 @@ impl Debug for Builtin {
 
 #[derive(Eq, Clone)]
 pub enum SExpr {
-    Atom(Value),
+    Atom(Rc<Value>),
     // An S-expr is evaluated, cons ain't
     S(Rc<SExpr>, Rc<SExpr>),
-    Cons(Rc<SExpr>, Rc<SExpr>),
 }
 
 impl SExpr {
-    pub fn nil() -> SExpr {
-        SExpr::Atom(Value::nil())
-    }
-
-    pub fn truthy() -> SExpr {
-        SExpr::Atom(Value::Int(1))
+    pub fn nil() -> Rc<SExpr> {
+        Rc::new(SExpr::Atom(Value::nil()))
     }
 
     pub fn is_nil(&self) -> bool {
@@ -226,36 +226,22 @@ impl SExpr {
         }
     }
 
-    pub fn quote(&self) -> Self {
-        let quote_expr = Rc::new(SExpr::Atom(Value::Builtin(Builtin::Quote)));
-        SExpr::S(quote_expr, Rc::new(self.clone()))
-    }
-
-    pub fn is_quoted(&self) -> bool {
-        match self {
-            SExpr::S(car, _) =>
-                matches!(car.atom_value(), Some(Value::Builtin(Builtin::Quote))),
-            _ => false,
-        }
-    }
-
-    pub fn rhs(&self) -> Option<Rc<SExpr>> {
-        match self {
-            SExpr::Atom(_) => None,
-            SExpr::S(_, rhs) => Some(rhs.clone()),
-            SExpr::Cons(_, rhs) => Some(rhs.clone()),
-        }
-    }
-
-    pub fn atom_value(&self) -> Option<Value> {
+    pub fn atom_value(&self) -> Option<Rc<Value>> {
         match self {
             SExpr::Atom(value) => Some(value.clone()),
             _ => None,
         }
     }
 
-    pub fn is_atom(&self) -> bool {
-        matches!(self, SExpr::Atom(_))
+    pub fn atom(value: Value) -> Rc<SExpr> {
+        Rc::new(SExpr::Atom(Rc::new(value)))
+    }
+
+    pub fn quote(expr: Rc<SExpr>) -> Rc<SExpr> {
+        Rc::new(SExpr::S(
+            Rc::new(SExpr::Atom(Rc::new(Value::Builtin(Builtin::Quote)))),
+            expr
+        ))
     }
 }
 
@@ -264,9 +250,6 @@ impl PartialEq for SExpr {
         match (self, other) {
             (SExpr::Atom(lhs), SExpr::Atom(rhs)) => lhs == rhs,
             (SExpr::S(lhs_car, lhs_cdr), SExpr::S(rhs_car, rhs_cdr)) => {
-                lhs_car == rhs_car && lhs_cdr == rhs_cdr
-            },
-            (SExpr::Cons(lhs_car, lhs_cdr), SExpr::Cons(rhs_car, rhs_cdr)) => {
                 lhs_car == rhs_car && lhs_cdr == rhs_cdr
             },
             _ => false,
@@ -279,9 +262,6 @@ impl Debug for SExpr {
         match self {
             SExpr::Atom(value) => value.fmt(f),
             SExpr::S(lhs, rhs) => {
-                f.write_str(&format!("({:?} . {:?})", lhs, rhs))
-            },
-            SExpr::Cons(lhs, rhs) => {
                 f.write_str(&format!("({:?} . {:?})", lhs, rhs))
             },
         }
@@ -310,11 +290,11 @@ impl ParseContext {
     }
 }
 
-pub fn parse_str(s: &str) -> ParseResult<Vec<SExpr>> {
+pub fn parse_str(s: &str) -> ParseResult<Vec<Rc<SExpr>>> {
     parse(ParseContext::new(s))
 }
 
-fn parse(mut ctx: ParseContext) -> ParseResult<Vec<SExpr>> {
+fn parse(mut ctx: ParseContext) -> ParseResult<Vec<Rc<SExpr>>> {
     let mut exprs = vec![];
     parse_ws(&mut ctx);
     while !ctx.at_end() {
@@ -368,20 +348,20 @@ fn is_digit_char(c: char) -> bool {
 }
 
 /// Expects to not be at EOF
-fn parse_expr(ctx: &mut ParseContext) -> ParseResult<SExpr> {
+fn parse_expr(ctx: &mut ParseContext) -> ParseResult<Rc<SExpr>> {
     if ctx.at_end() {
         return Err("Hit EOF while parsing expr".to_owned());
     }
     match ctx.content[ctx.pos] {
         '\'' => {
             ctx.pos += 1;
-            Ok(parse_expr(ctx)?.quote())
+            Ok(SExpr::quote(parse_expr(ctx)?))
         },
         '\"' => parse_string(ctx),
-        '?' => Ok(SExpr::Atom(parse_char(ctx)?)),
+        '?' => Ok(SExpr::atom(parse_char(ctx)?)),
         '(' => parse_sexpr(ctx),
-        c if c.is_ascii_digit() || c == '-' => Ok(SExpr::Atom(parse_num(ctx)?)),
-        c if is_symbol_char(c) => Ok(SExpr::Atom(parse_symbol(ctx)?)),
+        c if c.is_ascii_digit() || c == '-' => Ok(SExpr::atom(parse_num(ctx)?)),
+        c if is_symbol_char(c) => Ok(SExpr::atom(parse_symbol(ctx)?)),
         c => Err(format!("Unexpected character: {c}")),
     }
 }
@@ -435,13 +415,13 @@ fn parse_char(ctx: &mut ParseContext) -> ParseResult<Value> {
 }
 
 /// Expects the first char to already be a double quote
-fn parse_string(ctx: &mut ParseContext) -> ParseResult<SExpr> {
+fn parse_string(ctx: &mut ParseContext) -> ParseResult<Rc<SExpr>> {
     ctx.pos += 1;
     let mut s = String::new();
     while let Some(c) = ctx.peek() {
         if c == '"' {
             ctx.pos += 1;
-            return Ok(SExpr::Atom(Value::String(s)));
+            return Ok(SExpr::atom(Value::String(s)));
         }
         s.push(c);
         ctx.pos += 1;
@@ -465,13 +445,13 @@ fn parse_symbol(ctx: &mut ParseContext) -> ParseResult<Value> {
 }
 
 /// Assumes we know that the current char is a left paren
-fn parse_sexpr(ctx: &mut ParseContext) -> ParseResult<SExpr> {
+fn parse_sexpr(ctx: &mut ParseContext) -> ParseResult<Rc<SExpr>> {
     ctx.pos += 1;
     parse_ws(ctx);
     // To allow the empty list
     if ctx.peek() == Some(')') {
         ctx.pos += 1;
-        return Ok(SExpr::Atom(Value::Builtin(Builtin::Nil)));
+        return Ok(SExpr::atom(Value::Builtin(Builtin::Nil)));
     }
     let lhs = parse_expr(ctx)?;
     parse_ws(ctx);
@@ -484,7 +464,7 @@ fn parse_sexpr(ctx: &mut ParseContext) -> ParseResult<SExpr> {
             return Err("Expected )".to_owned());
         }
         ctx.pos += 1;
-        return Ok(SExpr::S(Rc::new(lhs), Rc::new(rhs)));
+        return Ok(Rc::new(SExpr::S(lhs, rhs)));
     }
     // Otherwise, assume we're using the list style SExpr syntax
     let mut exprs = vec![lhs];
@@ -494,7 +474,7 @@ fn parse_sexpr(ctx: &mut ParseContext) -> ParseResult<SExpr> {
     }
     ctx.pos += 1;
     Ok(exprs.into_iter().rev().fold(SExpr::nil(), |acc, it| {
-        SExpr::S(Rc::new(it), Rc::new(acc))
+        Rc::new(SExpr::S(it, acc))
     }))
 }
 
@@ -502,16 +482,16 @@ fn parse_sexpr(ctx: &mut ParseContext) -> ParseResult<SExpr> {
 mod tests {
     use super::*;
 
-    fn parse_expr_str(s: &str) -> SExpr {
+    fn parse_expr_str(s: &str) -> Rc<SExpr> {
         parse_expr(&mut ParseContext::new(s)).expect("Failed parsing expr")
     }
 
     #[test]
     fn test_parse_num() {
-        assert_eq!(SExpr::Atom(Value::Int(1234)), parse_expr_str("1234"));
-        assert_eq!(SExpr::Atom(Value::Float(3.14)), parse_expr_str("3.14"));
-        assert_eq!(SExpr::Atom(Value::Float(3.0)), parse_expr_str("3.0"));
-        assert_eq!(SExpr::Atom(Value::Int(-1234)), parse_expr_str("-1234"));
+        assert_eq!(SExpr::atom(Value::Int(1234)), parse_expr_str("1234"));
+        assert_eq!(SExpr::atom(Value::Float(3.14)), parse_expr_str("3.14"));
+        assert_eq!(SExpr::atom(Value::Float(3.0)), parse_expr_str("3.0"));
+        assert_eq!(SExpr::atom(Value::Int(-1234)), parse_expr_str("-1234"));
     }
 
     #[test]

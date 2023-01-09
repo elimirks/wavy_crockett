@@ -10,7 +10,7 @@ type RunResult<T> = Result<T, String>;
 
 #[derive(Debug)]
 struct Scope {
-    values: HashMap<String, Rc<SExpr>>,
+    values: HashMap<String, Rc<Value>>,
     parent: Option<Rc<RefCell<Scope>>>,
 }
 
@@ -22,17 +22,17 @@ impl Scope {
         }
     }
 
-    fn lookup(&self, name: &str) -> Rc<SExpr> {
+    fn lookup(&self, name: &str) -> Rc<Value> {
         if let Some(value) = self.values.get(name) {
             value.clone()
         } else if let Some(parent) = &self.parent {
             parent.borrow().lookup(name)
         } else {
-            Rc::new(SExpr::nil())
+            Value::nil()
         }
     }
 
-    fn insert(&mut self, name: &str, value: Rc<SExpr>) {
+    fn insert(&mut self, name: &str, value: Rc<Value>) {
         self.values.insert(name.to_string(), value);
     }
 }
@@ -91,112 +91,73 @@ fn run_with_context(ctx: &mut RunContext, file_path: &str) -> RunResult<()> {
     ctx.required_paths.insert(path.clone());
     if let Ok(content) = std::fs::read_to_string(&path) {
         let root_exprs = parse_str(&content)?;
-        let exprs = root_exprs.into_iter().map(|sexpr| {
-            Rc::new(sexpr)
-        }).collect::<Vec<_>>();
-        eval_progn(ctx, &exprs)?;
+        eval_progn(ctx, &root_exprs)?;
         Ok(())
     } else {
         Err(format!("Failed reading {path}"))
     }
 }
 
-fn eval(ctx: &mut RunContext, expr: Rc<SExpr>) -> RunResult<Rc<SExpr>> {
+fn eval(ctx: &mut RunContext, expr: Rc<SExpr>) -> RunResult<Rc<Value>> {
     match &*expr {
         SExpr::Atom(value) => {
-            match value {
+            match &**value {
                 Value::Symbol(name) => {
-                    let value = ctx.scope.borrow().lookup(name);
-                    assert!(get_symbol_name(&value) != Some(name));
-                    eval(ctx, value)
+                    Ok(ctx.scope.borrow().lookup(name))
                 },
-                _ => Ok(expr.clone()),
+                _ => Ok(value.clone()),
             }
         },
         SExpr::S(car, cdr) => {
             let callee = eval(ctx, car.clone())?;
-            let should_eval_elems = match callee.atom_value() {
-                // Special case
-                Some(Value::Builtin(Builtin::Quote)) => {
-                    return Ok(call_quote(cdr.clone()));
-                },
-                // These take care of their own evaluation
-                Some(Value::Builtin(builtin)) => {
-                    !matches!(builtin, Builtin::Defun | Builtin::Lambda | Builtin::If)
-                },
-                _ => true,
-            };
-            let params = if should_eval_elems {
-                let mut params = vec![];
-                for sub in unfold(cdr.clone()).into_iter() {
-                    params.push(eval(ctx, sub)?);
-                }
-                params
-            } else {
-                unfold(cdr.clone())
-            };
-            call(ctx, callee, &params)
+            if let Value::Builtin(Builtin::Quote) = &*callee {
+                return Ok(call_quote(cdr.clone()));
+            }
+            call(ctx, callee, &unfold(cdr.clone()))
         },
-        // The only way to get a cons object is via the `cons` or `list` calls
-        // So we know everything must already be evaluated
-        SExpr::Cons(_, _) => Ok(expr),
     }
 }
 
-fn call_quote(arg: Rc<SExpr>) -> Rc<SExpr> {
+fn call_quote(arg: Rc<SExpr>) -> Rc<Value> {
     match &*arg {
-        SExpr::Atom(value) => {
-            match value {
-                Value::Symbol(_) => Rc::new(arg.quote()),
-                Value::Function(_, _) => Rc::new(arg.quote()),
-                // No need to quote primitives
-                _ => arg,
-            }
-        },
+        SExpr::Atom(value) => value.clone(),
         SExpr::S(car, cdr) => {
-            Rc::new(SExpr::Cons(
-                call_quote(car.clone()),
-                call_quote(cdr.clone())
-            ))
+            Rc::new(Value::Cons(call_quote(car.clone()), call_quote(cdr.clone())))
         },
-        SExpr::Cons(_, _) => arg,
     }
 }
 
 // The result is the last evaluated expr
-fn eval_progn(ctx: &mut RunContext, exprs: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    if exprs.is_empty() {
-        return Ok(Rc::new(SExpr::nil()));
+fn eval_progn(ctx: &mut RunContext, exprs: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
+    match eval_all(ctx, exprs)?.last() {
+        Some(value) => Ok(value.clone()),
+        None => Ok(Value::nil())
     }
-    for expr in exprs.iter().take(exprs.len() - 1) {
-        eval(ctx, expr.clone())?;
-    }
-    eval(ctx, exprs.last().unwrap().clone())
 }
 
-fn call(ctx: &mut RunContext, func: Rc<SExpr>, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn eval_all(ctx: &mut RunContext, exprs: &[Rc<SExpr>]) -> RunResult<Vec<Rc<Value>>> {
+    exprs.iter().map(|expr| eval(ctx, expr.clone())).collect::<RunResult<Vec<_>>>()
+}
+
+fn call(ctx: &mut RunContext, func: Rc<Value>, params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
     match &*func {
-        SExpr::Atom(value) => {
-            match value {
-                Value::Builtin(bi) => call_builtin(ctx, *bi, params),
-                Value::Function(args, body) => {
-                    if params.len() != args.len() {
-                        return Err("Function call parameter length mismatch".to_owned());
-                    }
-                    let parent_scope = ctx.scope.clone();
-                    let mut fun_scope = Scope::new(Some(parent_scope.clone()));
-                    for (name, param) in args.iter().zip(params.iter()) {
-                        fun_scope.insert(name, param.clone());
-                    }
-                    ctx.scope = Rc::new(RefCell::new(fun_scope));
-                    let result = eval_progn(ctx, body)?;
-                    ctx.scope = parent_scope;
-                    Ok(result)
-                },
-                _ => Err(format!("{value:?} is not callable")),
+        Value::Builtin(bi) => call_builtin(ctx, *bi, params),
+        Value::Function(args, body) => {
+            if params.len() != args.len() {
+                return Err("Function call parameter length mismatch".to_owned());
             }
+            let param_values = eval_all(ctx, params)?;
+            let parent_scope = ctx.scope.clone();
+            let mut fun_scope = Scope::new(Some(parent_scope.clone()));
+            for (name, param) in args.iter().zip(param_values.iter()) {
+                fun_scope.insert(name, param.clone());
+            }
+            ctx.scope = Rc::new(RefCell::new(fun_scope));
+            let result = eval_progn(ctx, body)?;
+            ctx.scope = parent_scope;
+            Ok(result)
         },
-        other => panic!("{other:?}"),
+        value => Err(format!("{value:?} is not callable")),
     }
 }
 
@@ -216,7 +177,7 @@ fn unfold(sexpr: Rc<SExpr>) -> Vec<Rc<SExpr>> {
     values
 }
 
-fn param_count_eq(func: Builtin, params: &[Rc<SExpr>], n: usize) -> RunResult<()> {
+fn param_count_eq<T>(func: Builtin, params: &[T], n: usize) -> RunResult<()> {
     if params.len() != n {
         Err(format!("{func:?} must have exactly {n} params"))
     } else {
@@ -224,7 +185,7 @@ fn param_count_eq(func: Builtin, params: &[Rc<SExpr>], n: usize) -> RunResult<()
     }
 }
 
-fn param_count_ge(func: Builtin, params: &[Rc<SExpr>], n: usize) -> RunResult<()> {
+fn param_count_ge<T>(func: Builtin, params: &[T], n: usize) -> RunResult<()> {
     if params.len() < n {
         Err(format!("{func:?} must have at least {n} params"))
     } else {
@@ -232,13 +193,13 @@ fn param_count_ge(func: Builtin, params: &[Rc<SExpr>], n: usize) -> RunResult<()
     }
 }
 
-fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
     match func {
         Builtin::Lambda => eval_lambda(params),
         Builtin::Defun => {
             param_count_ge(func, params, 3)?;
-            if is_symbol(&params[0]) {
-                let fun_sym = params[0].clone();
+            if let Some(name) = get_expr_symbol_name(&params[0]) {
+                let fun_sym = Rc::new(Value::Symbol(name));
                 let new = params[1..].to_vec();
                 let fun = eval_lambda(&new)?;
                 eval_set(ctx.root_scope(), &[fun_sym, fun])
@@ -246,15 +207,22 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
                 Err("The first param to defun be a symbol".to_owned())
             }
         },
-        Builtin::Nil => Ok(Rc::new(SExpr::nil())),
-        Builtin::Set => eval_set(ctx.scope.clone(), params),
-        Builtin::Setg => eval_set(ctx.root_scope(), params),
+        Builtin::Nil => Ok(Value::nil()),
+        Builtin::Set => {
+            let values = eval_all(ctx, params)?;
+            eval_set(ctx.scope.clone(), &values)
+        },
+        Builtin::Setg => {
+            let values = eval_all(ctx, params)?;
+            eval_set(ctx.root_scope(), &values)
+        },
         Builtin::Progn => eval_progn(ctx, params),
         Builtin::Putc => {
             param_count_eq(func, params, 1)?;
-            if let Some(c) = try_get_char(&params[0]) {
+            let param = eval(ctx, params[0].clone())?;
+            if let Some(c) = try_get_char(&param) {
                 print!("{c}");
-                Ok(Rc::new(SExpr::nil()))
+                Ok(Value::nil())
             } else {
                 Err("putc must accept exactly 1 char argument".to_owned())
             }
@@ -263,7 +231,7 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             param_count_eq(func, params, 1)?;
             let param = params[0].clone(); 
             eprintln!("DEBUG: {param:?}");
-            Ok(Rc::new(SExpr::nil()))
+            Ok(Value::nil())
         },
         Builtin::If => {
             param_count_eq(func, params, 3)?;
@@ -276,7 +244,8 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
         },
         Builtin::Car => {
             param_count_eq(func, params, 1)?;
-            if let Some(car) = get_car(&params[0]) {
+            let param = eval(ctx, params[0].clone())?;
+            if let Some(car) = get_car(&param) {
                 Ok(car)
             } else {
                 Err("The argument to car must be a list".to_owned())
@@ -284,7 +253,8 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
         },
         Builtin::Cdr => {
             param_count_eq(func, params, 1)?;
-            if let Some(car) = get_cdr(&params[0]) {
+            let param = eval(ctx, params[0].clone())?;
+            if let Some(car) = get_cdr(&param) {
                 Ok(car)
             } else {
                 Err("The argument to cdr must be a list".to_owned())
@@ -292,29 +262,33 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
         },
         Builtin::Cons => {
             param_count_eq(func, params, 2)?;
-            let car = params[0].clone();
-            let cdr = params[1].clone();
-            Ok(Rc::new(SExpr::Cons(car, cdr)))
+            let car = eval(ctx, params[0].clone())?;
+            let cdr = eval(ctx, params[1].clone())?;
+            Ok(Rc::new(Value::Cons(car, cdr)))
         },
         Builtin::IsFalsy => {
             param_count_eq(func, params, 1)?;
-            if is_truthy(params[0].clone()) {
-                Ok(Rc::new(SExpr::nil()))
+            let param = eval(ctx, params[0].clone())?;
+            if is_truthy(param) {
+                Ok(Value::nil())
             } else {
-                Ok(Rc::new(SExpr::truthy()))
+                Ok(Value::truthy())
             }
         },
         Builtin::IsEq => {
             param_count_eq(func, params, 2)?;
-            if params[0] == params[1] {
-                Ok(Rc::new(SExpr::truthy()))
+            let lhs = eval(ctx, params[0].clone())?;
+            let rhs = eval(ctx, params[1].clone())?;
+            if lhs == rhs {
+                Ok(Value::truthy())
             } else {
-                Ok(Rc::new(SExpr::nil()))
+                Ok(Value::nil())
             }
         },
         Builtin::Exit => {
             param_count_eq(func, params, 1)?;
-            if let Some(status) = get_int(&params[0]).filter(|v| *v >= 0 && *v <= 255) {
+            let param = eval(ctx, params[0].clone())?;
+            if let Some(status) = try_get_int(&param).filter(|v| *v >= 0 && *v <= 255) {
                 exit(status as i32);
             } else {
                 Err(format!("{func:?} must be called on an int value between 0-255"))
@@ -322,135 +296,154 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
         },
         Builtin::Require => {
             param_count_eq(func, params, 1)?;
-            if let Some(file_path) = try_get_string(&params[0]) {
+            let param = eval(ctx, params[0].clone())?;
+            if let Some(file_path) = try_get_string(&param) {
                 run_with_context(ctx, &file_path)?;
-                Ok(Rc::new(SExpr::nil()))
+                Ok(Value::nil())
             } else {
                 Err(format!("{func:?} accepts exactly 1 string argument"))
             }
         },
         Builtin::Add | Builtin::Sub | Builtin::Mul | Builtin::Div | Builtin::Mod | Builtin::Pow => {
             param_count_eq(func, params, 2)?;
-            let lhs = params[0].clone();
-            let rhs = params[1].clone();
-            match (&*lhs, &*rhs) {
-                (SExpr::Atom(lhs), SExpr::Atom(rhs)) =>
-                    Ok(Rc::new(SExpr::Atom(eval_arithmetic(func, lhs.clone(), rhs.clone())?))),
-                _ => Err(format!("{func:?} must be called on two values of the same type")),
-            }
+            let lhs = eval(ctx, params[0].clone())?;
+            let rhs = eval(ctx, params[1].clone())?;
+            eval_arithmetic(func, &lhs, &rhs)
         },
         Builtin::WdPureTone => {
             param_count_eq(func, params, 2)?;
-            wd_pure_tone(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_pure_tone(ctx, &values)
         },
         Builtin::WdSquare => {
             param_count_eq(func, params, 2)?;
-            wd_square(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_square(ctx, &values)
         },
         Builtin::WdSaw => {
             param_count_eq(func, params, 2)?;
-            wd_saw(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_saw(ctx, &values)
         },
         Builtin::WdTriangle => {
             param_count_eq(func, params, 2)?;
-            wd_triangle(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_triangle(ctx, &values)
         },
         Builtin::WdSave => {
             param_count_eq(func, params, 2)?;
-            wd_save(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_save(ctx, &values)
         },
         Builtin::WdPlay => {
             param_count_eq(func, params, 1)?;
-            wd_play(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_play(ctx, &values)
         },
         Builtin::WdMultiply => {
             param_count_eq(func, params, 2)?;
-            wd_multiply(params)
+            let values = eval_all(ctx, params)?;
+            wd_multiply(&values)
         },
         Builtin::WdSuperimpose => {
             param_count_eq(func, params, 2)?;
-            wd_superimpose(params)
+            let values = eval_all(ctx, params)?;
+            wd_superimpose(&values)
         },
         Builtin::WdSuperimposeInsert => {
             param_count_eq(func, params, 3)?;
-            wd_superimpose_insert(params)
+            let values = eval_all(ctx, params)?;
+            wd_superimpose_insert(&values)
         },
         Builtin::WdLen => {
             param_count_eq(func, params, 1)?;
-            wd_len(params)
+            let values = eval_all(ctx, params)?;
+            wd_len(&values)
         },
         Builtin::WdConcat => {
             param_count_eq(func, params, 2)?;
-            wd_concat(params)
+            let values = eval_all(ctx, params)?;
+            wd_concat(&values)
         },
         Builtin::WdNoise => {
             param_count_eq(func, params, 1)?;
-            wd_noise(params)
+            let values = eval_all(ctx, params)?;
+            wd_noise(&values)
         },
         Builtin::WdSubSample => {
             param_count_eq(func, params, 3)?;
-            wd_subsample(params)
+            let values = eval_all(ctx, params)?;
+            wd_subsample(&values)
         },
         Builtin::WdReverse => {
             param_count_eq(func, params, 1)?;
-            wd_reverse(params)
+            let values = eval_all(ctx, params)?;
+            wd_reverse(&values)
         },
         Builtin::WdPlot => {
             param_count_eq(func, params, 1)?;
-            wd_plot(params)
+            let values = eval_all(ctx, params)?;
+            wd_plot(&values)
         },
         Builtin::WdFromFrequencies => {
             param_count_eq(func, params, 1)?;
-            wd_from_frequencies(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_from_frequencies(ctx, &values)
         },
         Builtin::WdSpline => {
             param_count_eq(func, params, 2)?;
-            wd_spline(params)
+            let values = eval_all(ctx, params)?;
+            wd_spline(&values)
         },
         Builtin::WdLowPass => {
             param_count_eq(func, params, 2)?;
-            wd_low_pass(ctx, params)
+            let values = eval_all(ctx, params)?;
+            wd_low_pass(ctx, &values)
         },
         Builtin::ToString => {
             param_count_eq(func, params, 1)?;
-            Ok(Rc::new(sexpr_as_string(&params[0])))
+            let value = eval(ctx, params[0].clone())?;
+            Ok(sexpr_as_string(&value))
         },
         // Special case, handled elsewhere
         Builtin::Quote => unreachable!(),
         Builtin::StrAsList => {
             param_count_eq(func, params, 1)?;
-            string_as_char_list(&params[0])
+            let param = eval(ctx, params[0].clone())?;
+            string_as_char_list(&param)
         },
         Builtin::ListAsStr => {
             param_count_eq(func, params, 1)?;
-            char_list_as_string(params[0].clone())
+            let param = eval(ctx, params[0].clone())?;
+            char_list_as_string(param)
         },
         Builtin::List => {
-            Ok(params.iter().rev().fold(Rc::new(SExpr::nil()), |acc, it| {
-                Rc::new(SExpr::Cons(it.clone(), acc))
+            let param_values = eval_all(ctx, params)?;
+            Ok(param_values.iter().rev().fold(Value::nil(), |acc, it| {
+                Rc::new(Value::Cons(it.clone(), acc))
             }))
         },
         Builtin::Cmp => {
             param_count_eq(func, params, 2)?;
-            let lhs = params[0].atom_value();
-            let rhs = params[1].atom_value();
-            let res = match (lhs, rhs) {
-                (Some(Value::Int(lhs)), Some(Value::Int(rhs))) => {
-                    match lhs.cmp(&rhs) {
+            let lhs = eval(ctx, params[0].clone())?;
+            let rhs = eval(ctx, params[1].clone())?;
+            let res = match (&*lhs, &*rhs) {
+                (Value::Int(lhs), Value::Int(rhs)) => {
+                    match lhs.cmp(rhs) {
                         std::cmp::Ordering::Less => -1,
                         std::cmp::Ordering::Equal => 0,
                         std::cmp::Ordering::Greater => 1,
                     }
                 },
-                (Some(Value::String(lhs)), Some(Value::String(rhs))) => {
-                    match lhs.cmp(&rhs) {
+                (Value::String(lhs), Value::String(rhs)) => {
+                    match lhs.cmp(rhs) {
                         std::cmp::Ordering::Less => -1,
                         std::cmp::Ordering::Equal => 0,
                         std::cmp::Ordering::Greater => 1,
                     }
                 },
-                (Some(Value::Float(lhs)), Some(Value::Float(rhs))) => {
-                    match lhs.partial_cmp(&rhs) {
+                (Value::Float(lhs), Value::Float(rhs)) => {
+                    match lhs.partial_cmp(rhs) {
                         Some(std::cmp::Ordering::Less) => -1,
                         Some(std::cmp::Ordering::Equal) => 0,
                         Some(std::cmp::Ordering::Greater) => 1,
@@ -459,21 +452,22 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
                 },
                 _ => return Err(format!("Cannot compare {:?} with {:?}", params[0], params[1])),
             };
-            Ok(Rc::new(SExpr::Atom(Value::Int(res))))
+            Ok(Rc::new(Value::Int(res)))
         },
         Builtin::ToInt => {
             param_count_eq(func, params, 1)?;
-            let int_value = match params[0].atom_value() {
-                Some(Value::Int(value)) => value,
-                Some(Value::Float(value)) => value as i64,
+            let value = eval(ctx, params[0].clone())?;
+            let int_value = match &*value {
+                Value::Int(value) => *value,
+                Value::Float(value) => *value as i64,
                 _ => return Err("to-int only works on floats (and ints)".to_owned()),
             };
-            Ok(Rc::new(SExpr::Atom(Value::Int(int_value))))
+            Ok(Rc::new(Value::Int(int_value)))
         },
     }
 }
 
-fn wd_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_pure_tone(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
@@ -488,10 +482,10 @@ fn wd_pure_tone(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> 
         let x = 2.0 * PI * sample_time * frequency;
         data.push(x.sin());
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_square(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_square(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
@@ -510,10 +504,10 @@ fn wd_square(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
             data.push(-1.0);
         }
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_saw(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_saw(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
@@ -529,10 +523,10 @@ fn wd_saw(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
         let x = 2.0 * ((t / period) - ((t / period) + 0.5).floor());
         data.push(x);
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_triangle(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_triangle(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
@@ -548,11 +542,11 @@ fn wd_triangle(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
         let x = 2.0 * (t / period - (t / period + 0.5).floor()).abs();
         data.push((2.0 * x) - 1.0);
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
 
-fn wd_plot(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_plot(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let wavedata = try_get_wavedata(&params[0])
         .ok_or("wavedata parameter must be a wavedata object")?;
     plot_wavedata(wavedata);
@@ -560,7 +554,7 @@ fn wd_plot(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
 }
 
 // https://math.stackexchange.com/questions/1820065/equation-for-a-sinusoidal-wave-with-changing-frequency
-fn wd_from_frequencies(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_from_frequencies(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
@@ -578,11 +572,11 @@ fn wd_from_frequencies(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<S
         let x = 2.0 * PI * cumulative;
         data.push(x.sin());
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_spline(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
-    let points = try_get_point_list(&params[0])
+fn wd_spline(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
+    let points = try_get_point_list(params[0].clone())
         .ok_or("points parameter must be list of float atoms (of the form `(a . b)`)")?;
     let sample_count = try_get_int(&params[1])
         .ok_or("sample-count parameter must be an int")?;
@@ -607,10 +601,10 @@ fn wd_spline(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
         let x = spline.sample(t).unwrap();
         data.push(x);
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_low_pass(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_low_pass(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     use biquad::*;
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     // # of samples per second
@@ -630,10 +624,10 @@ fn wd_low_pass(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     ).unwrap();
     let mut bq = DirectForm2Transposed::<f64>::new(coeffs);
     let data = wavedata.iter().map(|&v| bq.run(v)).collect::<Vec<_>>();
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_save(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_save(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
@@ -643,13 +637,13 @@ fn wd_save(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
         .ok_or("file-path parameter must be a String")?;
 
     if save_wave(sample_rate as u32, &wavedata, &file_path).is_ok() {
-        Ok(Rc::new(SExpr::nil()))
+        Ok(Value::nil())
     } else {
         Err(format!("Failed saving wave file to {file_path}"))
     }
 }
 
-fn wd_play(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_play(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let sr = ctx.scope.borrow().lookup("wd-sample-rate");
     let sample_rate = try_get_int(&sr)
         .ok_or("wd-sample-rate must be globally set as an int")?;
@@ -657,13 +651,13 @@ fn wd_play(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
         .ok_or("wavedata parameter must be a wavedata object")?;
 
     if play_wave(sample_rate as u32, &wavedata).is_ok() {
-        Ok(Rc::new(SExpr::nil()))
+        Ok(Value::nil())
     } else {
         Err("Failed playing wavedata".to_owned())
     }
 }
 
-fn wd_multiply(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_multiply(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let lhs = try_get_wavedata(&params[0])
         .ok_or("lhs parameter must be a wavedata object")?;
     let rhs = try_get_wavedata(&params[1])
@@ -675,10 +669,10 @@ fn wd_multiply(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     for i in 0..data.len() {
         data[i] *= rhs[i];
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_superimpose(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_superimpose(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let lhs = try_get_wavedata(&params[0])
         .ok_or("lhs parameter must be a wavedata object")?;
     let rhs = try_get_wavedata(&params[1])
@@ -691,10 +685,10 @@ fn wd_superimpose(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     for i in 0..to_add.len() {
         data[i] += to_add[i];
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_superimpose_insert(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_superimpose_insert(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let from_data = try_get_wavedata(&params[0])
         .ok_or("`from` parameter must be a wavedata object")?;
     let index = try_get_int(&params[1])
@@ -712,25 +706,25 @@ fn wd_superimpose_insert(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
             data[offset] += n;
         }
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_len(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_len(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let param = try_get_wavedata(&params[0])
         .ok_or("wd-len must be called on a single wavedata object")?;
-    Ok(Rc::new(SExpr::Atom(Value::Int(param.len() as i64))))
+    Ok(Rc::new(Value::Int(param.len() as i64)))
 }
 
-fn wd_concat(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_concat(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let mut lhs = try_get_wavedata(&params[0])
         .ok_or("lhs parameter must be a wavedata object")?;
     let rhs = try_get_wavedata(&params[1])
         .ok_or("rhs parameter must be a wavedata object")?;
     lhs.extend_from_slice(&rhs);
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(lhs))))
+    Ok(Rc::new(Value::WaveData(lhs)))
 }
 
-fn wd_noise(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_noise(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let mut rng = thread_rng();
     let sample_count = try_get_int(&params[0])
         .ok_or("sample-count parameter must be an int")?;
@@ -738,10 +732,10 @@ fn wd_noise(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     for _ in 0..sample_count {
         data.push(rng.gen_range(-1.0..1.0));
     }
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_subsample(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_subsample(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let start = try_get_int(&params[0])
         .ok_or("start parameter must be an int")?;
     let end = try_get_int(&params[1])
@@ -760,136 +754,119 @@ fn wd_subsample(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
     }
 
     let data = wavedata[start as usize..end as usize].to_vec();
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-fn wd_reverse(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn wd_reverse(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     let mut data = try_get_wavedata(&params[0])
         .ok_or("data parameter must be a wavedata object")?;
     data.reverse();
-    Ok(Rc::new(SExpr::Atom(Value::WaveData(data))))
+    Ok(Rc::new(Value::WaveData(data)))
 }
 
-// FIXME: Rework these to use cons cells instead
-
-fn char_list_as_string(expr: Rc<SExpr>) -> RunResult<Rc<SExpr>> {
+fn char_list_as_string(value: Rc<Value>) -> RunResult<Rc<Value>> {
     let mut s = String::new();
-    for c_expr in unfold(unquote(expr)).iter() {
-        if let Some(c) = try_get_char(c_expr) {
-            s.push(c);
-        } else {
-            return Err("Invalid character list".to_owned());
+    let mut head = value;
+    loop {
+        match &*head {
+            Value::Cons(car, cdr) => {
+                if let Some(c) = try_get_char(car) {
+                    s.push(c);
+                } else {
+                    return Err("Invalid character list".to_owned());
+                }
+                head = cdr.clone();
+            },
+            Value::Builtin(Builtin::Nil) => break,
+            _ => return Err("Invalid character list".to_owned()),
         }
     }
-    Ok(Rc::new(SExpr::Atom(Value::String(s))))
+    Ok(Rc::new(Value::String(s)))
 }
 
-fn string_as_char_list(expr: &SExpr) -> RunResult<Rc<SExpr>> {
-    if let Some(s) = try_get_string(expr) {
-        Ok(Rc::new(s.chars().rev().fold(Rc::new(SExpr::nil()), |acc, it| {
-            Rc::new(SExpr::S(Rc::new(SExpr::Atom(Value::Int(it as i64))), acc))
-        }).quote()))
-    } else {
-        Err(format!("Value is not a string: {expr:?}"))
-    }
-}
-
-fn sexpr_as_string(expr: &SExpr) -> SExpr {
-    SExpr::Atom(Value::String(format!("{expr:?}")))
-}
-
-fn unquote(expr: Rc<SExpr>) -> Rc<SExpr> {
-    let mut result = expr;
-    if result.is_quoted() {
-        result = result.rhs().expect("How can this be quoted without an RHS?!");
-    }
-    result
-}
-
-fn is_truthy(sexpr: Rc<SExpr>) -> bool {
-    match &*sexpr {
-        SExpr::Atom(value) => match value {
-            Value::Int(value)   => *value != 0,
-            Value::Float(value) => *value != 0.0,
-            Value::Builtin(Builtin::Nil) => false,
-            _                   => true,
+fn string_as_char_list(value: &Value) -> RunResult<Rc<Value>> {
+    match value {
+        Value::String(s) => {
+            Ok(s.chars().rev().fold(Value::nil(), |acc, it| {
+                Rc::new(Value::Cons(Rc::new(Value::Int(it as i64)), acc))
+            }))
         },
-        _ => true,
+        _ => Err(format!("Value is not a string: `{value:?}`"))
     }
 }
 
-fn get_int(sexpr: &SExpr) -> Option<i64> {
-    match sexpr {
-        SExpr::Atom(Value::Int(value)) => Some(*value),
+fn sexpr_as_string(value: &Value) -> Rc<Value> {
+    Rc::new(Value::String(format!("{value:?}")))
+}
+
+fn is_truthy(value: Rc<Value>) -> bool {
+    match &*value {
+        Value::Int(value)   => *value != 0,
+        Value::Float(value) => *value != 0.0,
+        Value::Builtin(Builtin::Nil) => false,
+        _                   => true,
+    }
+}
+
+fn get_car(value: &Value) -> Option<Rc<Value>> {
+    match value {
+        Value::Cons(car, _) => Some(car.clone()),
+        Value::Builtin(Builtin::Nil) => Some(Value::nil()),
         _ => None,
     }
 }
 
-fn get_car(expr: &SExpr) -> Option<Rc<SExpr>> {
-    match expr {
-        SExpr::Atom(Value::Builtin(Builtin::Nil)) => Some(Rc::new(SExpr::nil())),
-        SExpr::Cons(car, _) => Some(car.clone()),
-        SExpr::S(car, _) => Some(car.clone()),
+fn get_cdr(value: &Value) -> Option<Rc<Value>> {
+    match value {
+        Value::Cons(_, cdr) => Some(cdr.clone()),
+        Value::Builtin(Builtin::Nil) => Some(Value::nil()),
         _ => None,
     }
 }
 
-fn get_cdr(expr: &SExpr) -> Option<Rc<SExpr>> {
-    match expr {
-        SExpr::Atom(Value::Builtin(Builtin::Nil)) => Some(Rc::new(SExpr::nil())),
-        SExpr::Cons(_, cdr) => Some(cdr.clone()),
-        SExpr::S(car, _) => Some(car.clone()),
-        _ => None,
-    }
-}
-
-fn try_get_char(expr: &SExpr) -> Option<char> {
+fn try_get_char(expr: &Value) -> Option<char> {
     try_get_int(expr).and_then(|value| char::from_u32(value as u32))
 }
 
-fn try_get_int(expr: &SExpr) -> Option<i64> {
-    match expr {
-        SExpr::Atom(Value::Int(value)) => Some(*value),
+fn try_get_int(value: &Value) -> Option<i64> {
+    match value {
+        Value::Int(value) => Some(*value),
         _ => None,
     }
 }
 
-fn try_get_float(expr: &SExpr) -> Option<f64> {
-    match expr {
-        SExpr::Atom(Value::Float(value)) => Some(*value),
+fn try_get_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Float(value) => Some(*value),
         _ => None,
     }
 }
 
-fn try_get_string(expr: &SExpr) -> Option<String> {
-    match expr {
-        SExpr::Atom(Value::String(value)) => Some(value.clone()),
+fn try_get_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
         _ => None,
     }
 }
 
-fn try_get_wavedata(expr: &SExpr) -> Option<Vec<f64>> {
-    match expr {
-        SExpr::Atom(Value::WaveData(value)) => Some(value.clone()),
+fn try_get_wavedata(value: &Value) -> Option<Vec<f64>> {
+    match value {
+        Value::WaveData(value) => Some(value.clone()),
         _ => None,
     }
 }
 
-fn try_get_list(root: &SExpr) -> Option<Vec<Rc<SExpr>>> {
+fn try_get_list(root: Rc<Value>) -> Option<Vec<Rc<Value>>> {
     let mut elems = vec![];
-    let mut expr = root;
-    while let SExpr::Cons(car, cdr) = expr {
+    let mut value = root;
+    while let Value::Cons(car, cdr) = &*value {
         elems.push(car.clone());
-        expr = cdr;
+        value = cdr.clone();
     }
-    if elems.is_empty() && !root.is_nil() {
-        None
-    } else {
-        Some(elems)
-    }
+    Some(elems)
 }
 
-fn try_get_point_list(root: &SExpr) -> Option<Vec<(f64, f64)>> {
+fn try_get_point_list(root: Rc<Value>) -> Option<Vec<(f64, f64)>> {
     let values = try_get_list(root)?;
     let mut points = vec![];
     for value in values.iter() {
@@ -901,56 +878,66 @@ fn try_get_point_list(root: &SExpr) -> Option<Vec<(f64, f64)>> {
     Some(points)
 }
 
-fn try_get_cons_pair(pair: &SExpr) -> Option<(Rc<SExpr>, Rc<SExpr>)> {
+fn try_get_cons_pair(pair: &Value) -> Option<(Rc<Value>, Rc<Value>)> {
     match pair {
-        SExpr::Cons(car, cdr) => Some((car.clone(), cdr.clone())),
+        Value::Cons(car, cdr) => Some((car.clone(), cdr.clone())),
         _ => None,
     }
 }
 
-fn eval_lambda(params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn eval_lambda(params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
     param_count_ge(Builtin::Lambda, params, 2)?;
+    let arg_exprs = params[0].clone();
+
     let mut arg_names = vec![];
-    for arg in unfold(params[0].clone()).iter() {
-        if let Some(name) = get_symbol_name(arg) {
+    for arg in unfold(arg_exprs).iter() {
+        if let Some(name) = get_expr_symbol_name(arg) {
             arg_names.push(name.clone());
         } else {
             return Err("The first param of a function definition must by a symbol list".to_owned());
         }
     }
     let f = Value::Function(arg_names, params[1..].to_vec());
-    Ok(Rc::new(SExpr::Atom(f)))
+    Ok(Rc::new(f))
 }
 
-fn eval_set(scope: Rc<RefCell<Scope>>, params: &[Rc<SExpr>]) -> RunResult<Rc<SExpr>> {
+fn eval_set(scope: Rc<RefCell<Scope>>, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     param_count_eq(Builtin::Set, params, 2)?;
-    if let Some(name) = get_symbol_name(&unquote(params[0].clone())) {
+    if let Some(name) = get_symbol_name(&params[0]) {
         let set_value = params[1].clone();
-        scope.borrow_mut().insert(name, set_value.clone());
+        scope.borrow_mut().insert(&name, set_value.clone());
         Ok(set_value)
     } else {
         Err("The first param to `set` must be a symbol".to_owned())
     }
 }
 
-fn get_symbol_name(sexpr: &SExpr) -> Option<&String> {
-    match sexpr {
-        SExpr::Atom(Value::Symbol(name)) => Some(name),
+fn get_expr_symbol_name(sexpr: &SExpr) -> Option<String> {
+    match sexpr.atom_value() {
+        Some(atom) => {
+            match &*atom {
+                Value::Symbol(name) => Some(name.clone()),
+                _ => None,
+            }
+        },
+        None => None,
+    }
+}
+
+fn get_symbol_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Symbol(name) => Some(name.clone()),
         _ => None,
     }
 }
 
-fn is_symbol(sexpr: &SExpr) -> bool {
-    get_symbol_name(sexpr).is_some()
-}
-
 // Assumes the given builtin is a valid arithmetic op
-fn eval_arithmetic(builtin: Builtin, lhs: Value, rhs: Value) -> RunResult<Value> {
+fn eval_arithmetic(builtin: Builtin, lhs: &Value, rhs: &Value) -> RunResult<Rc<Value>> {
     match (lhs, rhs) {
-        (Value::Int(lhs), Value::Int(rhs))     => Ok(eval_arithmetic_int(builtin, lhs, rhs)),
-        (Value::Int(lhs), Value::Float(rhs))   => Ok(eval_arithmetic_float(builtin, lhs as f64, rhs)),
-        (Value::Float(lhs), Value::Int(rhs))   => Ok(eval_arithmetic_float(builtin, lhs, rhs as f64)),
-        (Value::Float(lhs), Value::Float(rhs)) => Ok(eval_arithmetic_float(builtin, lhs, rhs)),
+        (Value::Int(lhs), Value::Int(rhs))     => Ok(eval_arithmetic_int(builtin, *lhs, *rhs)),
+        (Value::Int(lhs), Value::Float(rhs))   => Ok(eval_arithmetic_float(builtin, *lhs as f64, *rhs)),
+        (Value::Float(lhs), Value::Int(rhs))   => Ok(eval_arithmetic_float(builtin, *lhs, *rhs as f64)),
+        (Value::Float(lhs), Value::Float(rhs)) => Ok(eval_arithmetic_float(builtin, *lhs, *rhs)),
         (lhs, rhs) if lhs.is_nil() || rhs.is_nil() => {
             Err("Cannot perform arithmetic on nil".to_owned())
         },
@@ -958,8 +945,8 @@ fn eval_arithmetic(builtin: Builtin, lhs: Value, rhs: Value) -> RunResult<Value>
     }
 }
 
-fn eval_arithmetic_int(builtin: Builtin, lhs: i64, rhs: i64) -> Value {
-    Value::Int(match builtin {
+fn eval_arithmetic_int(builtin: Builtin, lhs: i64, rhs: i64) -> Rc<Value> {
+    Rc::new(Value::Int(match builtin {
         Builtin::Add => lhs + rhs,
         Builtin::Sub => lhs - rhs,
         Builtin::Mul => lhs * rhs,
@@ -967,11 +954,11 @@ fn eval_arithmetic_int(builtin: Builtin, lhs: i64, rhs: i64) -> Value {
         Builtin::Mod => lhs % rhs,
         Builtin::Pow => lhs.pow(rhs as u32),
         _ => unreachable!()
-    })
+    }))
 }
 
-fn eval_arithmetic_float(builtin: Builtin, lhs: f64, rhs: f64) -> Value {
-    Value::Float(match builtin {
+fn eval_arithmetic_float(builtin: Builtin, lhs: f64, rhs: f64) -> Rc<Value> {
+    Rc::new(Value::Float(match builtin {
         Builtin::Add => lhs + rhs,
         Builtin::Sub => lhs - rhs,
         Builtin::Mul => lhs * rhs,
@@ -979,7 +966,7 @@ fn eval_arithmetic_float(builtin: Builtin, lhs: f64, rhs: f64) -> Value {
         Builtin::Mod => lhs % rhs,
         Builtin::Pow => lhs.powf(rhs),
         _ => unreachable!()
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -987,10 +974,9 @@ mod tests {
     use super::*;
 
     // Returns the last evaluated expr
-    fn eval_str(s: &str) -> Rc<SExpr> {
+    fn eval_str(s: &str) -> Rc<Value> {
         let exprs = parse_str(s).unwrap()
             .into_iter()
-            .map(Rc::new)
             .collect::<Vec<_>>();
         let mut ctx = RunContext::new();
         eval_progn(&mut ctx, &exprs).unwrap()
@@ -1051,7 +1037,7 @@ mod tests {
     #[test]
     fn test_eval_quote() {
         assert_eq!("2", format!("{:?}", eval_str("'2")));
-        assert_eq!("(quote . a)", format!("{:?}", eval_str("'a")));
+        assert_eq!("a", format!("{:?}", eval_str("'a")));
         assert_eq!("(2 . nil)", format!("{:?}", eval_str("'(2)")));
     }
 
