@@ -96,6 +96,14 @@
   (set 'release (/ duration 16))
   (wd-pad-to-full-note (wd-adsr attack decay sustain release data)))
 
+(defun envelope-soft-hold (data)
+  (set 'duration (wd-len data))
+  (set 'attack (/ duration 16))
+  (set 'decay 0)
+  (set 'sustain 1.0)
+  (set 'release (/ duration 16))
+  (wd-pad-to-full-note (wd-adsr attack decay sustain release data)))
+
 (defun envelope-soft-half (data)
   (set 'duration wd-half-note-duration)
   (set 'attack (/ duration 16))

@@ -133,6 +133,7 @@ static BUILTIN_NAMES: &[(&str, Builtin)] = &[
     ("wd-spline", Builtin::WdSpline),
     ("wd-from-frequencies", Builtin::WdFromFrequencies),
     ("wd-low-pass", Builtin::WdLowPass),
+    ("wd-gaussian-blur", Builtin::WdGaussianBlur),
 ];
 
 fn builtin_for_name(name: &str) -> Option<Builtin> {
@@ -197,6 +198,7 @@ pub enum Builtin {
     WdSpline,
     WdFromFrequencies,
     WdLowPass,
+    WdGaussianBlur,
     ToInt,
     Pow,
 }

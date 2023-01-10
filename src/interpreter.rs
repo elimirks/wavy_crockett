@@ -400,6 +400,11 @@ fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> Ru
             let values = eval_all(ctx, params)?;
             wd_low_pass(ctx, &values)
         },
+        Builtin::WdGaussianBlur => {
+            param_count_eq(func, params, 2)?;
+            let values = eval_all(ctx, params)?;
+            wd_gaussian_blur(&values)
+        },
         Builtin::ToString => {
             param_count_eq(func, params, 1)?;
             let value = eval(ctx, params[0].clone())?;
@@ -624,6 +629,46 @@ fn wd_low_pass(ctx: &RunContext, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
     ).unwrap();
     let mut bq = DirectForm2Transposed::<f64>::new(coeffs);
     let data = wavedata.iter().map(|&v| bq.run(v)).collect::<Vec<_>>();
+    Ok(Rc::new(Value::WaveData(data)))
+}
+
+fn gaussian(x: f64, variance: f64) -> f64 {
+    let normalizing_constant = 1.0 / (variance * (2.0 * PI).sqrt());
+    let exp_param = -(x.powi(2)) / (2.0 * variance.powi(2));
+    normalizing_constant * exp_param.exp()
+}
+
+fn wd_gaussian_blur(params: &[Rc<Value>]) -> RunResult<Rc<Value>> {
+    let variance = try_get_float(&params[0])
+        .ok_or("variance parameter must be a float")?;
+    let wavedata = try_get_wavedata(&params[1])
+        .ok_or("wavedata parameter must be a wavedata object")?;
+    if variance <= 0.0 {
+        return Err("Variance must be > 0.0".to_owned());
+    }
+    // Compute gaussian mask
+    let epsilon = 1e-9f64; // Don't bother considering below this value
+    let mut mask = vec![];
+    for i in 0..wavedata.len() {
+        let g = gaussian(i as f64, variance);
+        if g < epsilon {
+            break;
+        }
+        mask.push(g);
+    }
+
+    let mut data = Vec::with_capacity(wavedata.len());
+    for i in 0..wavedata.len() {
+        let mut acc = 0.0;
+        for j in -(mask.len() as i64 - 1)..(mask.len() as i64) {
+            let idx = i as i64 + j;
+            if idx >= 0 && idx < wavedata.len() as i64 {
+                let m = mask[j.abs() as usize];
+                acc += m * wavedata[idx as usize];
+            }
+        }
+        data.push(acc);
+    }
     Ok(Rc::new(Value::WaveData(data)))
 }
 
