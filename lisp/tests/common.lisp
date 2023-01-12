@@ -20,6 +20,21 @@
 (assert (not (and nil 1)))
 (assert (not (and 1 nil)))
 
+(println "Running captured var tests")
+(defun add-curry (a)
+  (lambda (b) (+ a b)))
+(set 'add1 (add-curry 1))
+(assert (eq? (add1 1) 2))
+(set 'a 42)
+(assert (eq? (add1 2) 3))
+;; Test that undefined symbols will use dynamic scoping properly
+(defun add-curry-2 (a)
+  (lambda (b) (+ c (+ a b))))
+(set 'c 7)
+(set 'add-curry-2-thing (add-curry-2 1))
+(assert (eq? (add-curry-2-thing 2) 10))
+
+
 (println "Running `true?` tests")
 (assert (not (true? nil)))
 (assert (true? 2))

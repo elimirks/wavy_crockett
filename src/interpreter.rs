@@ -142,13 +142,19 @@ fn eval_all(ctx: &mut RunContext, exprs: &[Rc<SExpr>]) -> RunResult<Vec<Rc<Value
 fn call(ctx: &mut RunContext, func: Rc<Value>, params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
     match &*func {
         Value::Builtin(bi) => call_builtin(ctx, *bi, params),
-        Value::Function(args, body) => {
+        Value::Function(captured_scope, args, body) => {
             if params.len() != args.len() {
                 return Err("Function call parameter length mismatch".to_owned());
             }
             let param_values = eval_all(ctx, params)?;
             let parent_scope = ctx.scope.clone();
             let mut fun_scope = Scope::new(Some(parent_scope.clone()));
+            for (name, value) in captured_scope.iter() {
+                match &**value {
+                    Value::Builtin(Builtin::Nil) => {},
+                    _ => fun_scope.insert(name, value.clone()),
+                }
+            }
             for (name, param) in args.iter().zip(param_values.iter()) {
                 fun_scope.insert(name, param.clone());
             }
@@ -195,13 +201,13 @@ fn param_count_ge<T>(func: Builtin, params: &[T], n: usize) -> RunResult<()> {
 
 fn call_builtin(ctx: &mut RunContext, func: Builtin, params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
     match func {
-        Builtin::Lambda => eval_lambda(params),
+        Builtin::Lambda => eval_lambda(ctx, params),
         Builtin::Defun => {
             param_count_ge(func, params, 3)?;
             if let Some(name) = get_expr_symbol_name(&params[0]) {
                 let fun_sym = Rc::new(Value::Symbol(name));
                 let new = params[1..].to_vec();
-                let fun = eval_lambda(&new)?;
+                let fun = eval_lambda(ctx, &new)?;
                 eval_set(ctx.root_scope(), &[fun_sym, fun])
             } else {
                 Err("The first param to defun be a symbol".to_owned())
@@ -930,7 +936,7 @@ fn try_get_cons_pair(pair: &Value) -> Option<(Rc<Value>, Rc<Value>)> {
     }
 }
 
-fn eval_lambda(params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
+fn eval_lambda(ctx: &RunContext, params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
     param_count_ge(Builtin::Lambda, params, 2)?;
     let arg_exprs = params[0].clone();
 
@@ -942,8 +948,33 @@ fn eval_lambda(params: &[Rc<SExpr>]) -> RunResult<Rc<Value>> {
             return Err("The first param of a function definition must by a symbol list".to_owned());
         }
     }
-    let f = Value::Function(arg_names, params[1..].to_vec());
+    // Inefficient but simple. It would be nice to deal with this at parse time
+    let referenced_vars = params[1..].iter()
+        .flat_map(|expr| find_symbols(&expr))
+        .filter(|symbol| {
+            !arg_names.contains(symbol)
+        })
+        .collect::<Vec<_>>();
+    let mut captured_scope = HashMap::new();
+    for var in referenced_vars.iter() {
+        captured_scope.insert(var.clone(), ctx.scope.borrow().lookup(&var));
+    }
+    let f = Value::Function(captured_scope, arg_names, params[1..].to_vec());
     Ok(Rc::new(f))
+}
+
+fn find_symbols(expr: &SExpr) -> Vec<String> {
+    match expr {
+        SExpr::Atom(value) => match &**value {
+            Value::Symbol(name) => vec![name.clone()],
+            _ => vec![],
+        },
+        SExpr::S(car, cdr) => {
+            let mut symbols = find_symbols(car);
+            symbols.extend_from_slice(&find_symbols(cdr));
+            symbols
+        },
+    }
 }
 
 fn eval_set(scope: Rc<RefCell<Scope>>, params: &[Rc<Value>]) -> RunResult<Rc<Value>> {

@@ -1,4 +1,4 @@
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, rc::Rc, collections::HashMap};
 
 type ParseResult<T> = Result<T, String>;
 
@@ -13,7 +13,8 @@ pub enum Value {
     // More efficient operations can be done on wavedata, so that we won't be
     // crippled by the poor performance of my Lisp implementation.
     WaveData(Vec<f64>),
-    Function(Vec<String>, Vec<Rc<SExpr>>),
+    // (captured_scope, arg_names, function_body)
+    Function(HashMap<String, Rc<Value>>, Vec<String>, Vec<Rc<SExpr>>),
     Cons(Rc<Value>, Rc<Value>),
 }
 
@@ -24,11 +25,12 @@ impl PartialEq for Value {
             (Value::Builtin(lhs), Value::Builtin(rhs)) => lhs == rhs,
             (Value::Int(lhs), Value::Int(rhs)) => lhs == rhs,
             (Value::Float(lhs), Value::Float(rhs)) => lhs == rhs,
-            (Value::Function(lhs_params, lhs_body), Value::Function(rhs_params, rhs_body)) => {
+            (Value::Function(lhs_captured, lhs_params, lhs_body), Value::Function(rhs_captured, rhs_params, rhs_body)) => {
                 if lhs_params.len() != rhs_params.len() || lhs_body.len() != rhs_body.len() {
                     false
                 } else {
                     lhs_params.iter().zip(rhs_params).all(|(l, r)| l == r)
+                        && lhs_captured == rhs_captured
                 }
             },
             (Value::Cons(lhs_car, lhs_cdr), Value::Cons(rhs_car, rhs_cdr)) => {
@@ -69,7 +71,7 @@ impl Debug for Value {
                     f.write_str(&value.to_string())
                 }
             },
-            Value::Function(args, body) => {
+            Value::Function(_, args, body) => {
                 f.write_str("(lambda (")?;
                 f.write_str(&args.join(" "))?;
                 f.write_str(") ")?;
