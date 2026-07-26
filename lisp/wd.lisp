@@ -224,3 +224,6 @@
 ;; i.e., with any number of "keys pressed"
 (defun wd-create-chord-multipliers (initial-offset spacing cardinality)
   (map (lambda (it) (+ initial-offset (* it spacing))) (range 0 cardinality)))
+
+(defun wd-repeat (n wavedata) 
+    (reduce wd-concat (map (lambda (it) wavedata) (range 0 n))))

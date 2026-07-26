@@ -889,6 +889,7 @@ fn try_get_int(value: &Value) -> Option<i64> {
 fn try_get_float(value: &Value) -> Option<f64> {
     match value {
         Value::Float(value) => Some(*value),
+        Value::Int(value) => Some(*value as f64),
         _ => None,
     }
 }

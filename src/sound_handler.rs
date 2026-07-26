@@ -156,7 +156,7 @@ fn drawable<F>(application: &gtk::Application, width: i32, height: i32, draw_fn:
     F: Fn(&DrawingArea, &Context) -> Inhibit + 'static,
 {
     let window = gtk::ApplicationWindow::new(application);
-    let drawing_area = Box::new(DrawingArea::new)();
+    let drawing_area = DrawingArea::new();
 
     drawing_area.connect_draw(draw_fn);
 

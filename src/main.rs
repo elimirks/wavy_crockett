@@ -1,4 +1,3 @@
-#![feature(box_patterns)]
 mod parser;
 mod interpreter;
 mod sound_handler;
